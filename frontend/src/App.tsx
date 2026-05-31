@@ -57,7 +57,7 @@ interface DashboardData {
   holdings: HoldingItem[];
 }
 
-const API_BASE = 'http://smartportfolio-backend.onrender.com/api/v1';
+const API_BASE = 'http://192.168.0.9:8000/api/v1';
 
 // =========================================================================
 // 2. CLIENT-SIDE FINANCIAL ENGINE PORT (Fallback if API is Offline)
@@ -78,66 +78,167 @@ const CLIENT_ASSETS: Record<string, { name: string; type: string; price: number;
 };
 
 const T1_MATRIX: Record<string, Record<string, number>> = {
-  "CONSERVATIVE": { "NIFTYBEES": 0.70, "GOLDBEES": 0.25, "BTC": 0.05 },
-  "MODERATE": { "NIFTYBEES": 0.65, "GOLDBEES": 0.25, "BTC": 0.10 },
-  "AGGRESSIVE": { "NIFTYBEES": 0.60, "BANKBEES": 0.25, "BTC": 0.15 }
+  "CONSERVATIVE": {
+    "NIFTYBEES": 0.50,
+    "GOLDBEES": 0.20,
+    "BTC": 0.20,
+    "ETH": 0.10
+  },
+  "MODERATE": {
+    "NIFTYBEES": 0.45,
+    "BANKBEES": 0.15,
+    "GOLDBEES": 0.10,
+    "BTC": 0.20,
+    "ETH": 0.10
+  },
+  "AGGRESSIVE": {
+    "NIFTYBEES": 0.40,
+    "BANKBEES": 0.20,
+    "GOLDBEES": 0.10,
+    "BTC": 0.15,
+    "ETH": 0.10,
+    "SOL": 0.05
+  }
 };
 
 const T2_MATRIX: Record<string, Record<string, number>> = {
-  "CONSERVATIVE": { "NIFTYBEES": 0.40, "GOLDBEES": 0.20, "RELIANCE": 0.10, "HDFCBANK": 0.10, "TCS": 0.05, "BTC": 0.10, "ETH": 0.05 },
-  "MODERATE": { "NIFTYBEES": 0.25, "GOLDBEES": 0.10, "BANKBEES": 0.10, "RELIANCE": 0.10, "HDFCBANK": 0.10, "TATAMOTORS": 0.10, "BTC": 0.15, "ETH": 0.07, "SOL": 0.03 },
-  "AGGRESSIVE": { "NIFTYBEES": 0.15, "BANKBEES": 0.15, "RELIANCE": 0.10, "TATAMOTORS": 0.15, "TATASTEEL": 0.10, "BTC": 0.15, "ETH": 0.10, "SOL": 0.07, "ADA": 0.03 }
+  "CONSERVATIVE": {
+    "NIFTYBEES": 0.30,
+    "GOLDBEES": 0.20,
+    "RELIANCE": 0.10,
+    "HDFCBANK": 0.10,
+    "BTC": 0.20,
+    "ETH": 0.10
+  },
+  "MODERATE": {
+    "NIFTYBEES": 0.20,
+    "BANKBEES": 0.10,
+    "GOLDBEES": 0.10,
+    "RELIANCE": 0.10,
+    "HDFCBANK": 0.10,
+    "TCS": 0.10,
+    "BTC": 0.15,
+    "ETH": 0.10,
+    "SOL": 0.05
+  },
+  "AGGRESSIVE": {
+    "NIFTYBEES": 0.15,
+    "BANKBEES": 0.15,
+    "RELIANCE": 0.10,
+    "TATAMOTORS": 0.15,
+    "TATASTEEL": 0.15,
+    "BTC": 0.15,
+    "ETH": 0.10,
+    "SOL": 0.05
+  }
 };
 
 function calculateClientAllocation(capital: number, risk: string): PortfolioData {
   const isT1 = capital <= 15000;
   const matrix = isT1 ? T1_MATRIX[risk] : T2_MATRIX[risk];
-  const allocations: AllocationItem[] = [];
+  
+  // 1. First Pass: calculate targets and collect swept capital
+  const drafts: Record<string, { allocated_capital: number; target_pct: number; volatility: number; asset_type: string; price: number; name: string }> = {};
+  let sweptPool = 0;
+  const affordableEtfs: string[] = [];
 
+  for (const [symbol, target] of Object.entries(matrix)) {
+    const meta = CLIENT_ASSETS[symbol];
+    const targetCap = capital * target;
+
+    if (meta.type.startsWith("EQUITY")) {
+      if (targetCap >= meta.price) {
+        drafts[symbol] = {
+          allocated_capital: targetCap,
+          target_pct: target,
+          volatility: meta.volatility,
+          asset_type: meta.type,
+          price: meta.price,
+          name: meta.name
+        };
+        if (meta.type === "EQUITY_ETF") {
+          affordableEtfs.push(symbol);
+        }
+      } else {
+        sweptPool += targetCap;
+        drafts[symbol] = {
+          allocated_capital: 0,
+          target_pct: target,
+          volatility: meta.volatility,
+          asset_type: meta.type,
+          price: meta.price,
+          name: meta.name
+        };
+      }
+    } else {
+      drafts[symbol] = {
+        allocated_capital: targetCap,
+        target_pct: target,
+        volatility: meta.volatility,
+        asset_type: meta.type,
+        price: meta.price,
+        name: meta.name
+      };
+    }
+  }
+
+  // 2. Second Pass: Distribute swept pool proportionally among affordable ETFs
+  if (sweptPool > 0) {
+    if (affordableEtfs.length > 0) {
+      const totalEtfWeight = affordableEtfs.reduce((sum, s) => sum + matrix[s], 0);
+      if (totalEtfWeight > 0) {
+        for (const symbol of affordableEtfs) {
+          const proportion = matrix[symbol] / totalEtfWeight;
+          drafts[symbol].allocated_capital += sweptPool * proportion;
+        }
+      }
+    } else {
+      const cheapestEtf = "GOLDBEES";
+      if (drafts[cheapestEtf]) {
+        drafts[cheapestEtf].allocated_capital += sweptPool;
+      }
+    }
+  }
+
+  // 3. Third Pass: Perform rounding and finalize ledger
+  const allocations: AllocationItem[] = [];
   let totalCost = 0;
   let brokerage = 0;
   let weightedRisk = 0;
   let equitiesVal = 0;
   let cryptoVal = 0;
 
-  const entries = Object.entries(matrix).sort((a, _b) => {
-    const typeA = CLIENT_ASSETS[a[0]].type;
-    return typeA.startsWith("EQUITY") ? -1 : 1;
-  });
-
-  for (const [symbol, target] of entries) {
-    const meta = CLIENT_ASSETS[symbol];
-    const targetCap = capital * target;
+  for (const [symbol, draft] of Object.entries(drafts)) {
     let units = 0;
     let cost = 0;
     let fee = 0;
 
-    if (meta.type.startsWith("EQUITY")) {
-      units = Math.floor(targetCap / meta.price);
-      cost = units * meta.price;
+    if (draft.asset_type.startsWith("EQUITY")) {
+      units = Math.floor(draft.allocated_capital / draft.price);
+      cost = units * draft.price;
       fee = units > 0 ? 20 : 0;
       equitiesVal += cost;
     } else {
-      cost = targetCap;
-      units = parseFloat((cost / meta.price).toFixed(8));
+      cost = draft.allocated_capital;
+      units = parseFloat((cost / draft.price).toFixed(8));
       fee = cost * 0.002;
       cryptoVal += cost;
     }
 
     totalCost += cost;
     brokerage += fee;
-    weightedRisk += target * meta.volatility;
+    weightedRisk += draft.target_pct * draft.volatility;
 
     allocations.push({
       symbol,
-      name: meta.name,
-      asset_type: meta.type,
-      target_percentage: Math.round(target * 10000) / 100,
+      name: draft.name,
+      asset_type: draft.asset_type,
+      target_percentage: Math.round(draft.target_pct * 10000) / 100,
       allocated_percentage: Math.round((cost / capital) * 10000) / 100,
-      price: meta.price,
+      price: draft.price,
       units_to_buy: units,
       total_cost: Math.round(cost * 100) / 100,
-      asset_risk_score: meta.volatility
+      asset_risk_score: draft.volatility
     });
   }
 
@@ -169,7 +270,7 @@ export default function App() {
   const [riskProfile, setRiskProfile] = useState<string>('CONSERVATIVE');
   const [analyzedData, setAnalyzedData] = useState<PortfolioData | null>(null);
   const [activeDashboard, setActiveDashboard] = useState<DashboardData | null>(null);
-
+  
   const [viewMode, setViewMode] = useState<'ANALYZE' | 'DASHBOARD'>('ANALYZE');
   const [loading, setLoading] = useState<boolean>(false);
   const [apiOnline, setApiOnline] = useState<boolean>(false);
@@ -205,7 +306,7 @@ export default function App() {
     try {
       const response = await fetch(`${API_BASE}/portfolio/analyze`, {
         method: 'POST',
-        headers: {
+        headers: { 
           'Content-Type': 'application/json',
           'bypass-tunnel-reminder': 'true'
         },
@@ -334,7 +435,7 @@ export default function App() {
   const handleUpdatePrices = () => {
     if (!activeDashboard) return;
     setLoading(true);
-
+    
     // Trigger dynamic updates by randomly fluctuating current prices slightly (+/- 2%)
     setTimeout(() => {
       const updatedHoldings = activeDashboard.holdings.map(h => {
@@ -384,7 +485,7 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: '1240px', margin: '0 auto', padding: '2rem 1.5rem' }}>
-
+      
       {/* Header Panel */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
@@ -394,7 +495,7 @@ export default function App() {
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '4px' }}>Intelligent Capital Allocator & Volatility-Mitigated Growth</p>
         </div>
-
+        
         {/* API Gateway Status Badge */}
         <div className="glass-card" style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '10px', borderRadius: '30px' }}>
           <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: apiOnline ? 'var(--success)' : 'var(--warning)', boxShadow: apiOnline ? '0 0 10px var(--success)' : '0 0 10px var(--warning)' }}></span>
@@ -409,7 +510,7 @@ export default function App() {
            VIEW: ANALYZE AND ALLOCATE PORTFOLIO
            ========================================================================= */
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '2rem', alignItems: 'start' }}>
-
+          
           {/* LEFT PANEL: Allocation Parameters */}
           <div className="glass-card animate-fade-in" style={{ padding: '2rem' }}>
             <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -477,7 +578,7 @@ export default function App() {
             {/* Risk Selection Cards */}
             <div style={{ marginBottom: '2rem' }}>
               <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>Risk Mitigation Strategy</label>
-
+              
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {[
                   { id: 'CONSERVATIVE', emoji: '🛡️', label: 'Conservative Growth', desc: 'Maximizes Index ETFs & Gold. Limits Crypto to 5-10%.' },
@@ -540,7 +641,7 @@ export default function App() {
                     <h3 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Intelligent Allocation Suggestion</h3>
                     <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginTop: '2px', fontWeight: 600 }}>{analyzedData.capital_tier}</p>
                   </div>
-
+                  
                   {/* Portfolio Volatility Score */}
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end' }}>
@@ -696,7 +797,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-
+                  
                   {/* Estimated Brokerage & Drag Fee info */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '16px', padding: '0 4px', fontWeight: 600 }}>
                     <span>Estimated Brokerage Cost: ₹{analyzedData.brokerage_fees_est}</span>
@@ -721,7 +822,7 @@ export default function App() {
             <>
               {/* Dashboard Metric Header Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.5rem' }}>
-
+                
                 {/* 1. Portfolio Current Valuation */}
                 <div className="glass-card" style={{ padding: '1.5rem 2rem' }}>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Current Portfolio Valuation</span>
@@ -758,12 +859,12 @@ export default function App() {
 
               {/* Layout splits: Holdings Table and Allocation chart */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: '2rem' }}>
-
+                
                 {/* Left split: Holdings Position Table */}
                 <div className="glass-card" style={{ padding: '2rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
                     <h3 style={{ fontSize: '1.2rem', fontWeight: 700 }}>📦 Active Holdings</h3>
-
+                    
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <button
                         onClick={handleUpdatePrices}
@@ -818,7 +919,7 @@ export default function App() {
                               <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block' }}>{h.name}</span>
                             </td>
                             <td style={{ padding: '12px 12px', textAlign: 'right', fontWeight: 600 }}>
-                              {h.units.toLocaleString('en-IN')}
+                              {h.asset_type === "CRYPTOCURRENCY" ? h.units : h.units.toLocaleString('en-IN')}
                             </td>
                             <td style={{ padding: '12px 12px', textAlign: 'right', color: 'var(--text-secondary)' }}>
                               ₹{h.average_buy_price.toLocaleString('en-IN')}
@@ -844,13 +945,12 @@ export default function App() {
                   <h3 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '1.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
                     📊 Portfolio Balance Breakdown
                   </h3>
-
+                  
                   {/* Draw a beautiful central SVG donut with live active statistics */}
                   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative', height: '200px', marginBottom: '1.5rem' }}>
                     <svg width="180" height="180" viewBox="0 0 100 100">
-                      {/* Simple clean visual stacked concentric arcs representing asset split */}
                       <circle cx="50" cy="50" r="40" fill="transparent" stroke="rgba(255,255,255,0.02)" strokeWidth="8" />
-
+                      
                       {/* Equities Arc (Purple) */}
                       <circle
                         cx="50"
@@ -879,7 +979,7 @@ export default function App() {
                         strokeLinecap="round"
                       />
                     </svg>
-
+                    
                     {/* Inner Donut Central text card */}
                     <div style={{ position: 'absolute', textAlign: 'center' }}>
                       <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 600 }}>Net Valuation</span>
@@ -916,8 +1016,7 @@ export default function App() {
 
                 </div>
               </div>
-            </>
-          )}
+            )}
         </div>
       )}
 

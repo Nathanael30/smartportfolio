@@ -39,7 +39,7 @@ app.add_middleware(
 # =========================================================================
 
 class AnalyzeRequest(BaseModel):
-    capital: float = Field(..., ge=1000.0, description="Capital allocation budget in INR (Minimum ₹1,000)")
+    capital: float = Field(..., ge=1000.0, description="Capital allocation budget in INR (Minimum ₹1,00,000)")
     risk_profile: str = Field("CONSERVATIVE", description="User risk tolerance: CONSERVATIVE, MODERATE, AGGRESSIVE")
 
 class AllocationResponseItem(BaseModel):
