@@ -1,0 +1,52 @@
+# SmartPortfolio Orchestration Setup
+
+services:
+  # 1. FastAPI Backend Service Gateway
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smartportfolio_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://smart_user:secure_pwd@db:5432/smartportfolio_db
+      - REDIS_URL=redis://redis:6379/0
+      - KITE_API_KEY=${KITE_API_KEY:-your_kite_api_key}
+      - KITE_ACCESS_TOKEN=${KITE_ACCESS_TOKEN:-your_kite_access_token}
+    depends_on:
+      - db
+      - redis
+    restart: always
+
+  # 2. PostgreSQL Relational Store
+  db:
+    image: postgres:15-alpine
+    container_name: smartportfolio_postgres
+    environment:
+      - POSTGRES_USER=smart_user
+      - POSTGRES_PASSWORD=secure_pwd
+      - POSTGRES_DB=smartportfolio_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Automatically initialize DB tables on first boot using our SQL schema
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    restart: always
+
+  # 3. Redis In-Memory Cache Store (Live pricing & sessions)
+  redis:
+    image: redis:7-alpine
+    container_name: smartportfolio_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
